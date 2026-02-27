@@ -181,6 +181,207 @@
 //   console.log("🚀 Server running on http://localhost:5000");
 //   console.log("📁 Vision Key Path:", keyPath);
 // });
+// const express = require("express");
+// const cors = require("cors");
+// const multer = require("multer");
+// const fs = require("fs");
+// const path = require("path");
+// const vision = require("@google-cloud/vision");
+// const pdfParse = require("pdf-parse");
+// const db = require("./firebase");
+
+// const app = express();
+
+// /* ================= MIDDLEWARE ================= */
+// // UPDATE: CORS ko configure kiya taaki local aur deployed frontend dono se connect ho sake
+// app.use(cors({
+//   origin: "*", // Sabhi origins allow kar diye hain shuruat ke liye
+//   methods: ["GET", "POST", "PUT", "DELETE"],
+//   credentials: true
+// }));
+// app.use(express.json());
+
+// // Serving static files (Invoices)
+// app.use("/invoices", express.static("invoices"));
+
+// /* ================= MULTER SETUP ================= */
+// // Folder check: Ensure folders exist for local and production
+// if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
+// if (!fs.existsSync("invoices")) fs.mkdirSync("invoices");
+
+// const upload = multer({ dest: "uploads/" });
+// const invoiceUpload = multer({ dest: "invoices/" });
+
+// /* ================= GOOGLE OCR SETUP ================= */
+// // Absolute path for key.json
+// const keyPath = path.join(__dirname, "key.json");
+
+// const client = new vision.ImageAnnotatorClient({
+//   keyFilename: keyPath,
+// });
+
+// async function runOCR(filePath) {
+//   try {
+//     const [result] = await client.textDetection(filePath);
+//     return result.textAnnotations[0]?.description || "";
+//   } catch (err) {
+//     console.error(`❌ OCR Error for ${filePath}:`, err.message);
+//     throw err; 
+//   }
+// }
+
+// /* ================= PDF OCR ================= */
+// async function extractInvoiceDetails(pdfPath) {
+//   const buffer = fs.readFileSync(pdfPath);
+//   const data = await pdfParse(buffer);
+//   const text = data.text;
+
+//   const amountMatch = text.match(/(Total|Grand Total|Amount)[^\d]*(\d+[,\d]*)/i);
+//   const invoiceMatch = text.match(/Invoice\s*(No|#)[:\s]*([A-Z0-9-]+)/i);
+
+//   return {
+//     rawText: text,
+//     amount: amountMatch ? amountMatch[2] : null,
+//     invoiceNumber: invoiceMatch ? invoiceMatch[2] : null,
+//   };
+// }
+
+// /* ================= USER UPLOAD ROUTE ================= */
+// app.post(
+//   "/upload",
+//   upload.fields([
+//     { name: "bill" },
+//     { name: "before" },
+//     { name: "after" },
+//     { name: "pump" },
+//   ]),
+//   async (req, res) => {
+//     try {
+//       const files = req.files;
+//       if (!files.bill || !files.before || !files.after || !files.pump) {
+//         return res.status(400).send("All 4 images are required.");
+//       }
+
+//       console.log("⚡ Starting OCR Analysis...");
+
+//       const [billText, beforeText, afterText, pumpText] = await Promise.all([
+//         runOCR(files.bill[0].path),
+//         runOCR(files.before[0].path),
+//         runOCR(files.after[0].path),
+//         runOCR(files.pump[0].path)
+//       ]);
+
+//       const record = {
+//         billText,
+//         beforeText,
+//         afterText,
+//         pumpText,
+//         location: JSON.parse(req.body.location || "{}"),
+//         uploadTime: req.body.uploadTime,
+//         verified: false,
+//         createdAt: new Date(),
+//       };
+
+//       console.log("📝 Saving to Firestore...");
+//       const doc = await db.collection("fuelRecords").add(record);
+
+//       res.json({
+//         success: true,
+//         userId: doc.id,
+//       });
+//     } catch (err) {
+//       console.error("🚨 Server Upload Error:", err);
+//       res.status(500).json({ 
+//         message: "Upload failed", 
+//         error: err.message
+//       });
+//     }
+//   }
+// );
+
+// /* ================= ADMIN & USER ROUTES ================= */
+// app.get("/admin", async (req, res) => {
+//   try {
+//     const snapshot = await db.collection("fuelRecords").orderBy("createdAt", "desc").get();
+//     const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+//     res.json(data);
+//   } catch (err) {
+//     res.status(500).send("Database error");
+//   }
+// });
+
+// app.post("/upload-invoice/:id", invoiceUpload.single("invoice"), async (req, res) => {
+//   try {
+//     const id = req.params.id;
+//     const finalPath = `invoices/${id}.pdf`;
+//     fs.renameSync(req.file.path, finalPath);
+
+//     const invoiceData = await extractInvoiceDetails(finalPath);
+
+//     await db.collection("fuelRecords").doc(id).update({
+//       verified: true,
+//       invoiceUrl: `/invoices/${id}.pdf`,
+//       invoiceData,
+//     });
+
+//     res.json({ success: true });
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).send("Invoice processing failed");
+//   }
+// });
+
+// app.get("/user/:id", async (req, res) => {
+//   try {
+//     const doc = await db.collection("fuelRecords").doc(req.params.id).get();
+//     if (!doc.exists) return res.status(404).send("Not found");
+//     res.json(doc.data());
+//   } catch (err) {
+//     res.status(500).send("Error fetching data");
+//   }
+// });
+
+// /* ================= REPORT GENERATION ================= */
+// const PDFDocument = require("pdfkit");
+// app.get("/report/:id", async (req, res) => {
+//   try {
+//     const id = req.params.id;
+//     const docSnap = await db.collection("fuelRecords").doc(id).get();
+//     const data = docSnap.data();
+
+//     if (!data) return res.status(404).send("Not found");
+
+//     const doc = new PDFDocument();
+//     res.setHeader("Content-Disposition", `attachment; filename=report-${id}.pdf`);
+//     res.setHeader("Content-Type", "application/pdf");
+//     doc.pipe(res);
+
+//     doc.fontSize(18).text("Fuel Verification Report", { align: "center" });
+//     doc.moveDown().fontSize(12).text(`User ID: ${id}`);
+//     doc.text(`Upload Time: ${data.uploadTime}`);
+//     doc.text(`Location: ${data.location?.address || "N/A"}`);
+    
+//     doc.moveDown().fontSize(14).text("Bill OCR:").fontSize(10).text(data.billText || "N/A");
+//     doc.moveDown().fontSize(14).text("Before Meter:").fontSize(10).text(data.beforeText || "N/A");
+//     doc.moveDown().fontSize(14).text("After Meter:").fontSize(10).text(data.afterText || "N/A");
+//     doc.moveDown().fontSize(14).text("Pump OCR:").fontSize(10).text(data.pumpText || "N/A");
+
+//     doc.end();
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).send("PDF generation failed");
+//   }
+// });
+
+// /* ================= SERVER START ================= */
+// // UPDATE: Fixed port 5000 hta kar dynamic port lagaya Render ke liye
+// const PORT = process.env.PORT || 5000; 
+
+// app.listen(PORT, "0.0.0.0", () => {
+//   console.log(`🚀 Server running on port ${PORT}`);
+//   console.log("📁 Vision Key Path:", keyPath);
+// });
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -193,44 +394,63 @@ const db = require("./firebase");
 const app = express();
 
 /* ================= MIDDLEWARE ================= */
-// UPDATE: CORS ko configure kiya taaki local aur deployed frontend dono se connect ho sake
+
 app.use(cors({
-  origin: "*", // Sabhi origins allow kar diye hain shuruat ke liye
+  origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));
+
 app.use(express.json());
 
-// Serving static files (Invoices)
+// serve invoices
 app.use("/invoices", express.static("invoices"));
 
-/* ================= MULTER SETUP ================= */
-// Folder check: Ensure folders exist for local and production
+/* ================= FOLDER SETUP ================= */
+
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 if (!fs.existsSync("invoices")) fs.mkdirSync("invoices");
+
+/* ================= MULTER ================= */
 
 const upload = multer({ dest: "uploads/" });
 const invoiceUpload = multer({ dest: "invoices/" });
 
-/* ================= GOOGLE OCR SETUP ================= */
-// Absolute path for key.json
-const keyPath = path.join(__dirname, "key.json");
+/* ================= GOOGLE VISION SETUP ================= */
 
-const client = new vision.ImageAnnotatorClient({
-  keyFilename: keyPath,
-});
+let visionClient;
+
+// ✅ Render ENV
+if (process.env.VISION_KEY) {
+  console.log("👁 Using Vision ENV credentials");
+
+  visionClient = new vision.ImageAnnotatorClient({
+    credentials: JSON.parse(process.env.VISION_KEY),
+  });
+}
+// ✅ Localhost
+else {
+  console.log("💻 Using local Vision key");
+
+  const keyPath = path.join(__dirname, "key.json");
+
+  visionClient = new vision.ImageAnnotatorClient({
+    keyFilename: keyPath,
+  });
+}
 
 async function runOCR(filePath) {
   try {
-    const [result] = await client.textDetection(filePath);
+    const [result] = await visionClient.textDetection(filePath);
     return result.textAnnotations[0]?.description || "";
   } catch (err) {
-    console.error(`❌ OCR Error for ${filePath}:`, err.message);
-    throw err; 
+    console.error("❌ OCR Error:", err.message);
+    throw err;
   }
 }
 
 /* ================= PDF OCR ================= */
+
 async function extractInvoiceDetails(pdfPath) {
   const buffer = fs.readFileSync(pdfPath);
   const data = await pdfParse(buffer);
@@ -246,7 +466,8 @@ async function extractInvoiceDetails(pdfPath) {
   };
 }
 
-/* ================= USER UPLOAD ROUTE ================= */
+/* ================= USER UPLOAD ================= */
+
 app.post(
   "/upload",
   upload.fields([
@@ -258,18 +479,20 @@ app.post(
   async (req, res) => {
     try {
       const files = req.files;
+
       if (!files.bill || !files.before || !files.after || !files.pump) {
         return res.status(400).send("All 4 images are required.");
       }
 
-      console.log("⚡ Starting OCR Analysis...");
+      console.log("⚡ Starting OCR...");
 
-      const [billText, beforeText, afterText, pumpText] = await Promise.all([
-        runOCR(files.bill[0].path),
-        runOCR(files.before[0].path),
-        runOCR(files.after[0].path),
-        runOCR(files.pump[0].path)
-      ]);
+      const [billText, beforeText, afterText, pumpText] =
+        await Promise.all([
+          runOCR(files.bill[0].path),
+          runOCR(files.before[0].path),
+          runOCR(files.after[0].path),
+          runOCR(files.pump[0].path),
+        ]);
 
       const record = {
         billText,
@@ -282,7 +505,6 @@ app.post(
         createdAt: new Date(),
       };
 
-      console.log("📝 Saving to Firestore...");
       const doc = await db.collection("fuelRecords").add(record);
 
       res.json({
@@ -290,30 +512,42 @@ app.post(
         userId: doc.id,
       });
     } catch (err) {
-      console.error("🚨 Server Upload Error:", err);
-      res.status(500).json({ 
-        message: "Upload failed", 
-        error: err.message
+      console.error("🚨 Upload Error:", err);
+      res.status(500).json({
+        message: "Upload failed",
+        error: err.message,
       });
     }
   }
 );
 
-/* ================= ADMIN & USER ROUTES ================= */
+/* ================= ADMIN ================= */
+
 app.get("/admin", async (req, res) => {
   try {
-    const snapshot = await db.collection("fuelRecords").orderBy("createdAt", "desc").get();
-    const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const snapshot = await db
+      .collection("fuelRecords")
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const data = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
     res.json(data);
   } catch (err) {
     res.status(500).send("Database error");
   }
 });
 
+/* ================= INVOICE UPLOAD ================= */
+
 app.post("/upload-invoice/:id", invoiceUpload.single("invoice"), async (req, res) => {
   try {
     const id = req.params.id;
     const finalPath = `invoices/${id}.pdf`;
+
     fs.renameSync(req.file.path, finalPath);
 
     const invoiceData = await extractInvoiceDetails(finalPath);
@@ -331,18 +565,24 @@ app.post("/upload-invoice/:id", invoiceUpload.single("invoice"), async (req, res
   }
 });
 
+/* ================= USER STATUS ================= */
+
 app.get("/user/:id", async (req, res) => {
   try {
     const doc = await db.collection("fuelRecords").doc(req.params.id).get();
+
     if (!doc.exists) return res.status(404).send("Not found");
+
     res.json(doc.data());
   } catch (err) {
     res.status(500).send("Error fetching data");
   }
 });
 
-/* ================= REPORT GENERATION ================= */
+/* ================= REPORT PDF ================= */
+
 const PDFDocument = require("pdfkit");
+
 app.get("/report/:id", async (req, res) => {
   try {
     const id = req.params.id;
@@ -352,19 +592,33 @@ app.get("/report/:id", async (req, res) => {
     if (!data) return res.status(404).send("Not found");
 
     const doc = new PDFDocument();
-    res.setHeader("Content-Disposition", `attachment; filename=report-${id}.pdf`);
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=report-${id}.pdf`
+    );
     res.setHeader("Content-Type", "application/pdf");
+
     doc.pipe(res);
 
     doc.fontSize(18).text("Fuel Verification Report", { align: "center" });
-    doc.moveDown().fontSize(12).text(`User ID: ${id}`);
+    doc.moveDown();
+
+    doc.fontSize(12).text(`User ID: ${id}`);
     doc.text(`Upload Time: ${data.uploadTime}`);
     doc.text(`Location: ${data.location?.address || "N/A"}`);
-    
-    doc.moveDown().fontSize(14).text("Bill OCR:").fontSize(10).text(data.billText || "N/A");
-    doc.moveDown().fontSize(14).text("Before Meter:").fontSize(10).text(data.beforeText || "N/A");
-    doc.moveDown().fontSize(14).text("After Meter:").fontSize(10).text(data.afterText || "N/A");
-    doc.moveDown().fontSize(14).text("Pump OCR:").fontSize(10).text(data.pumpText || "N/A");
+
+    doc.moveDown().fontSize(14).text("Bill OCR:");
+    doc.fontSize(10).text(data.billText || "N/A");
+
+    doc.moveDown().fontSize(14).text("Before Meter:");
+    doc.fontSize(10).text(data.beforeText || "N/A");
+
+    doc.moveDown().fontSize(14).text("After Meter:");
+    doc.fontSize(10).text(data.afterText || "N/A");
+
+    doc.moveDown().fontSize(14).text("Pump OCR:");
+    doc.fontSize(10).text(data.pumpText || "N/A");
 
     doc.end();
   } catch (err) {
@@ -373,11 +627,10 @@ app.get("/report/:id", async (req, res) => {
   }
 });
 
-/* ================= SERVER START ================= */
-// UPDATE: Fixed port 5000 hta kar dynamic port lagaya Render ke liye
-const PORT = process.env.PORT || 5000; 
+/* ================= SERVER ================= */
+
+const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log("📁 Vision Key Path:", keyPath);
 });
